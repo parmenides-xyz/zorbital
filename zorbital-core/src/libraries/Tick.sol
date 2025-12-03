@@ -27,13 +27,20 @@ library Tick {
     function update(
         mapping(int24 => Tick.Info) storage self,
         int24 tick,
-        uint128 rDelta,
+        int128 rDelta,
         int24 currentTick,
         uint256 feeGrowthGlobalX128
     ) internal returns (bool flipped) {
         Tick.Info storage tickInfo = self[tick];
         uint128 rGrossBefore = tickInfo.rGross;
-        uint128 rGrossAfter = rGrossBefore + rDelta;
+        uint128 rGrossAfter;
+
+        // Handle add (positive) or remove (negative) liquidity
+        if (rDelta < 0) {
+            rGrossAfter = rGrossBefore - uint128(-rDelta);
+        } else {
+            rGrossAfter = rGrossBefore + uint128(rDelta);
+        }
 
         flipped = (rGrossAfter == 0) != (rGrossBefore == 0);
 
@@ -47,9 +54,13 @@ library Tick {
         }
 
         tickInfo.rGross = rGrossAfter;
-        // In Orbital with nested ticks, rNet simply accumulates the radius
-        // (always positive - direction determines add/subtract when crossing)
-        tickInfo.rNet = tickInfo.rNet + rDelta;
+        // In Orbital with nested ticks, rNet accumulates the radius delta
+        // (can be positive or negative)
+        if (rDelta < 0) {
+            tickInfo.rNet = tickInfo.rNet - uint128(-rDelta);
+        } else {
+            tickInfo.rNet = tickInfo.rNet + uint128(rDelta);
+        }
     }
 
     /// @notice Cross a tick and update fee tracking
@@ -69,5 +80,33 @@ library Tick {
         info.feeGrowthOutsideX128 = feeGrowthGlobalX128 - info.feeGrowthOutsideX128;
 
         rNet = info.rNet;
+    }
+
+    /// @notice Get fee growth inside a position's boundary
+    /// @dev In Orbital, positions have a single tick (boundary k), not lower/upper.
+    /// The position is "interior" when currentTick < tick (earning fees).
+    /// This is simpler than Uniswap V3's two-tick calculation.
+    /// @param self The mapping of tick info
+    /// @param tick The position's boundary tick
+    /// @param currentTick The current tick
+    /// @param feeGrowthGlobalX128 Current global fee growth
+    /// @return feeGrowthInsideX128 Fee growth inside the position's boundary
+    function getFeeGrowthInside(
+        mapping(int24 => Tick.Info) storage self,
+        int24 tick,
+        int24 currentTick,
+        uint256 feeGrowthGlobalX128
+    ) internal view returns (uint256 feeGrowthInsideX128) {
+        Tick.Info storage tickInfo = self[tick];
+
+        if (currentTick < tick) {
+            // Position is interior (α inside boundary) - earning fees now
+            // feeGrowthOutside tracks fees from when we were at/beyond boundary
+            feeGrowthInsideX128 = feeGrowthGlobalX128 - tickInfo.feeGrowthOutsideX128;
+        } else {
+            // Position is at/beyond boundary - not earning fees now
+            // feeGrowthOutside tracks fees from when we were interior
+            feeGrowthInsideX128 = tickInfo.feeGrowthOutsideX128;
+        }
     }
 }

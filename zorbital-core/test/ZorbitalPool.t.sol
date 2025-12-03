@@ -124,7 +124,7 @@ contract ZorbitalPoolTest is Test {
         bytes32 positionKey = keccak256(
             abi.encodePacked(address(this), params.tick)
         );
-        (uint128 posRadius) = pool.positions(positionKey);
+        (uint128 posRadius,,) = pool.positions(positionKey);
         assertEq(posRadius, params.radius, "incorrect position radius");
 
         // Check tick was initialized (Tick.Info has: initialized, rGross, rNet, feeGrowthOutsideX128)
@@ -331,5 +331,178 @@ contract ZorbitalPoolTest is Test {
         assertTrue(init2, "tick 2000 should be initialized");
         assertEq(rGross1, 400e18, "tick 1000 rGross");
         assertEq(rGross2, 600e18, "tick 2000 rGross");
+    }
+
+    // ============ Burn and Collect Tests ============
+
+    /// @notice Test burning liquidity removes radius and adds to tokensOwed
+    function testBurnLiquidity() public {
+        TestCaseParams memory params = TestCaseParams({
+            token0Balance: 1000e18,
+            token1Balance: 1000e18,
+            token2Balance: 1000e18,
+            token3Balance: 1000e18,
+            currentTick: 0,
+            tick: 2000,
+            radius: 1000e18,
+            currentSumReserves: 4000e18,
+            shouldTransferInCallback: true,
+            mintLiquidity: true
+        });
+
+        setupTestCase(params);
+
+        // Check initial state
+        assertEq(pool.r(), params.radius, "initial radius should be 1000e18");
+
+        bytes32 positionKey = keccak256(abi.encodePacked(address(this), params.tick));
+        (uint128 posBefore,,) = pool.positions(positionKey);
+        assertEq(posBefore, params.radius, "position radius should be 1000e18");
+
+        // Burn half the liquidity
+        uint128 burnAmount = 500e18;
+        uint256[] memory amounts = pool.burn(params.tick, burnAmount);
+
+        // Check amounts returned (should be equal per token)
+        uint256 expectedPerToken = 250e18; // 500e18 * (1 - 1/√4) = 500e18 * 0.5
+        assertEq(amounts[0], expectedPerToken, "incorrect burn amount token0");
+        assertEq(amounts[1], expectedPerToken, "incorrect burn amount token1");
+        assertEq(amounts[2], expectedPerToken, "incorrect burn amount token2");
+        assertEq(amounts[3], expectedPerToken, "incorrect burn amount token3");
+
+        // Check position was reduced
+        (uint128 posAfter, , uint128 tokensOwed) = pool.positions(positionKey);
+        assertEq(posAfter, params.radius - burnAmount, "position radius should be 500e18");
+
+        // Check tokensOwed was updated (4 tokens * expectedPerToken)
+        assertEq(tokensOwed, expectedPerToken * 4, "tokens owed should be set");
+
+        // Check global r was reduced
+        assertEq(pool.r(), params.radius - burnAmount, "global r should be 500e18");
+
+        // Check tick still has remaining liquidity
+        (bool initialized, uint128 rGross, uint128 rNet,) = pool.ticks(params.tick);
+        assertTrue(initialized, "tick should still be initialized");
+        assertEq(rGross, params.radius - burnAmount, "tick rGross should be reduced");
+        assertEq(rNet, params.radius - burnAmount, "tick rNet should be reduced");
+    }
+
+    /// @notice Test collecting tokens after burn
+    function testCollectAfterBurn() public {
+        TestCaseParams memory params = TestCaseParams({
+            token0Balance: 1000e18,
+            token1Balance: 1000e18,
+            token2Balance: 1000e18,
+            token3Balance: 1000e18,
+            currentTick: 0,
+            tick: 2000,
+            radius: 1000e18,
+            currentSumReserves: 4000e18,
+            shouldTransferInCallback: true,
+            mintLiquidity: true
+        });
+
+        setupTestCase(params);
+
+        // Burn all liquidity
+        pool.burn(params.tick, params.radius);
+
+        // Check tokensOwed
+        bytes32 positionKey = keccak256(abi.encodePacked(address(this), params.tick));
+        (, , uint128 tokensOwed) = pool.positions(positionKey);
+        assertTrue(tokensOwed > 0, "should have tokens owed");
+
+        // Record balances before collect
+        uint256 balance0Before = token0.balanceOf(address(this));
+        uint256 balance1Before = token1.balanceOf(address(this));
+        uint256 balance2Before = token2.balanceOf(address(this));
+        uint256 balance3Before = token3.balanceOf(address(this));
+
+        // Collect all tokens
+        uint128 amountCollected = pool.collect(address(this), params.tick, tokensOwed);
+        assertEq(amountCollected, tokensOwed, "should collect all tokens");
+
+        // Check balances increased (distributed across 4 tokens)
+        uint256 expectedPerToken = tokensOwed / 4;
+        assertEq(token0.balanceOf(address(this)) - balance0Before, expectedPerToken, "token0 collect");
+        assertEq(token1.balanceOf(address(this)) - balance1Before, expectedPerToken, "token1 collect");
+        assertEq(token2.balanceOf(address(this)) - balance2Before, expectedPerToken, "token2 collect");
+        assertEq(token3.balanceOf(address(this)) - balance3Before, expectedPerToken, "token3 collect");
+
+        // Check tokensOwed is now zero
+        (, , uint128 tokensOwedAfter) = pool.positions(positionKey);
+        assertEq(tokensOwedAfter, 0, "tokens owed should be zero");
+    }
+
+    /// @notice Test partial collect (request less than owed)
+    function testPartialCollect() public {
+        TestCaseParams memory params = TestCaseParams({
+            token0Balance: 1000e18,
+            token1Balance: 1000e18,
+            token2Balance: 1000e18,
+            token3Balance: 1000e18,
+            currentTick: 0,
+            tick: 2000,
+            radius: 1000e18,
+            currentSumReserves: 4000e18,
+            shouldTransferInCallback: true,
+            mintLiquidity: true
+        });
+
+        setupTestCase(params);
+
+        // Burn all liquidity
+        pool.burn(params.tick, params.radius);
+
+        bytes32 positionKey = keccak256(abi.encodePacked(address(this), params.tick));
+        (, , uint128 tokensOwed) = pool.positions(positionKey);
+
+        // Collect only half
+        uint128 requestAmount = tokensOwed / 2;
+        uint128 amountCollected = pool.collect(address(this), params.tick, requestAmount);
+        assertEq(amountCollected, requestAmount, "should collect requested amount");
+
+        // Check tokensOwed was reduced but not zero
+        (, , uint128 tokensOwedAfter) = pool.positions(positionKey);
+        assertEq(tokensOwedAfter, tokensOwed - requestAmount, "remaining tokens owed");
+    }
+
+    /// @notice Test collecting fees only (burn 0, then collect)
+    function testCollectFeesOnly() public {
+        TestCaseParams memory params = TestCaseParams({
+            token0Balance: 2000e18,
+            token1Balance: 2000e18,
+            token2Balance: 2000e18,
+            token3Balance: 2000e18,
+            currentTick: 0,
+            tick: 2000,
+            radius: 1000e18,
+            currentSumReserves: 4000e18,
+            shouldTransferInCallback: true,
+            mintLiquidity: true
+        });
+
+        setupTestCase(params);
+
+        // Do a small swap to generate fees (using same amount as testSwapUSDCForUSDT)
+        uint256 swapAmount = 10e18;
+        token0.mint(address(this), swapAmount);
+        uint256 tokenInIndex = findTokenIndex(address(token0));
+        uint256 tokenOutIndex = findTokenIndex(address(token1));
+        pool.swap(address(this), tokenInIndex, tokenOutIndex, swapAmount, 0, "");
+
+        // Burn 0 to trigger fee calculation update
+        pool.burn(params.tick, 0);
+
+        // Check position has fees accumulated
+        bytes32 positionKey = keccak256(abi.encodePacked(address(this), params.tick));
+        (, , uint128 tokensOwed) = pool.positions(positionKey);
+
+        // tokensOwed should be > 0 from swap fees
+        assertTrue(tokensOwed > 0, "should have fee tokens owed");
+
+        // Collect the fees
+        uint128 collected = pool.collect(address(this), params.tick, tokensOwed);
+        assertEq(collected, tokensOwed, "should collect fees");
     }
 }

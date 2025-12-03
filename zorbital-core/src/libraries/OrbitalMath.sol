@@ -132,6 +132,39 @@ library OrbitalMath {
         sumReserves = kNorm.mulWadDown(radius).mulWadDown(sqrtN);
     }
 
+    /// @notice Calculates the boundary k and s values for a tick
+    /// @dev Per spec: k = k^norm * r (unnormalized), s = √(r² - (k - r√n)²)
+    /// Used when a tick transitions to boundary state
+    /// @param tick The tick index
+    /// @param radius The radius contribution at this tick (rNet)
+    /// @param n The number of tokens
+    /// @return k The tick's unnormalized k value (k = k^norm * r)
+    /// @return s The boundary s value
+    function calcBoundaryKS(
+        int24 tick,
+        uint256 radius,
+        uint256 n
+    ) internal pure returns (uint256 k, uint256 s) {
+        uint256 kNorm = tickToKNorm(tick);
+        k = kNorm.mulWadDown(radius);  // k = k^norm * r (unnormalized)
+
+        uint256 sqrtN = FixedPointMathLib.sqrt(n * WAD * WAD);
+        uint256 rSqrtN = radius.mulWadDown(sqrtN);  // r√n
+
+        // s² = r² - (k - r√n)²
+        // Now both k and rSqrtN are in the same units (token units)
+        uint256 diff = k > rSqrtN ? k - rSqrtN : rSqrtN - k;
+        uint256 diffSquared = diff.mulWadDown(diff);
+        uint256 rSquared = radius.mulWadDown(radius);
+
+        if (rSquared > diffSquared) {
+            uint256 sSquared = rSquared - diffSquared;
+            s = FixedPointMathLib.sqrt(sSquared * WAD);
+        } else {
+            s = 0; // At or beyond the boundary limit
+        }
+    }
+
     /// @notice Calculates input/output amounts to reach a target sumReserves
     /// @dev Analogous to Uniswap V3's calcAmount0Delta - finds how much input
     ///      is needed to move reserves to a specific boundary.
@@ -202,13 +235,15 @@ library OrbitalMath {
             // ∂Q/∂y = 2*balanceIn + 2*d - 2*balanceOut + 2*y = 2*(balanceIn + d - balanceOut + y)
             // ∂w/∂y = (n * ∂Q/∂y) / (2*n*w) = ∂Q/∂y / (2*w)
 
-            if (w == 0) w = 1;
+            if (w == 0) w = WAD; // Use 1e18 to maintain scaling
             int256 dQdy = 2 * (int256(balanceIn) + int256(d) - int256(balanceOut) + int256(y));
             int256 fPrime = 2 * wMinusS * dQdy / int256(2 * w);
 
             if (fPrime == 0) break;
 
-            int256 step = fVal * int256(WAD) / fPrime;
+            // Newton step: y_new = y - f(y) / f'(y)
+            // fVal has units e36, fPrime has units e18, so step = e36/e18 = e18 ✓
+            int256 step = fVal / fPrime;
 
             if (step >= 0) {
                 y = uint256(step) > y ? 0 : y - uint256(step);
@@ -286,7 +321,8 @@ library OrbitalMath {
         uint256 rSquared = radius * radius;
 
         // Newton iteration to find new output balance (y)
-        uint256 y = balanceOut; // Initial guess
+        // Initial guess: for stablecoins, output ≈ input
+        uint256 y = balanceOut > amountRemaining ? balanceOut - amountRemaining : balanceOut / 2;
         uint256 prevY;
 
         for (uint256 i = 0; i < 255; ++i) {
@@ -317,7 +353,7 @@ library OrbitalMath {
             int256 dudy = int256(WAD * WAD / sqrtN);
             int256 dwdy_numer = int256(n - 1) * int256(y) - int256(A);
 
-            if (w == 0) w = 1;
+            if (w == 0) w = WAD; // Use 1e18 to maintain scaling
 
             int256 term1 = 2 * u * dudy / int256(WAD);
             int256 term2 = 2 * wMinusS * dwdy_numer / int256(n * w);
@@ -326,12 +362,19 @@ library OrbitalMath {
             if (fPrime == 0) break;
 
             // Newton step: y_new = y - f(y) / f'(y)
-            int256 step = fVal * int256(WAD) / fPrime;
+            // fVal has units e36, fPrime has units e18, so step = e36/e18 = e18 ✓
+            int256 step = fVal / fPrime;
 
+            // Dampen step to prevent overshooting (max 50% change per iteration)
+            uint256 maxStep = y / 2;
             if (step >= 0) {
-                y = uint256(step) > y ? 0 : y - uint256(step);
+                uint256 absStep = uint256(step);
+                if (absStep > maxStep) absStep = maxStep;
+                y = absStep > y ? 0 : y - absStep;
             } else {
-                y = y + uint256(-step);
+                uint256 absStep = uint256(-step);
+                if (absStep > maxStep) absStep = maxStep;
+                y = y + absStep;
             }
 
             // Bound y to prevent underflow in amountOut calculation
@@ -362,7 +405,19 @@ library OrbitalMath {
             : sumReservesNext < sumReservesTarget;
 
         if (crossesBoundary) {
-            // Cap at target boundary
+            // Cap at target boundary and recalculate amounts to match
+            // Use calcAmountToTarget to get exact amounts to reach boundary
+            (amountIn, amountOut) = calcAmountToTarget(
+                n,
+                sumReservesCurrent,
+                sumReservesTarget,
+                radius,
+                sumSquaredReserves,
+                balanceIn,
+                balanceOut,
+                k,
+                s
+            );
             sumReservesNext = sumReservesTarget;
         }
     }

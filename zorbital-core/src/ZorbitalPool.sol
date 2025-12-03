@@ -31,8 +31,11 @@ contract ZorbitalPool {
         uint256 sumReserves;
         // Current tick
         int24 tick;
-        // Current consolidated radius (analogous to liquidity L)
+        // Current consolidated interior radius (analogous to liquidity L)
         uint128 r;
+        // Boundary tick state for torus invariant
+        uint256 kBound;
+        uint256 sBound;
         // Fee growth accumulated during this swap
         uint256 feeGrowthGlobalX128;
     }
@@ -79,8 +82,14 @@ contract ZorbitalPool {
     // Sum of squared reserves (Q = Σx_i²) for torus invariant
     uint256 public sumSquaredReserves;
 
-    // Consolidated radius, r (analogue of liquidity L)
+    // Consolidated interior radius, r_int (analogue of liquidity L)
     uint128 public r;
+
+    // Boundary tick state (for torus invariant)
+    // kBound = sum of k values for all boundary ticks
+    // sBound = sum of s values for all boundary ticks, where s = sqrt(r² - (k - r√n)²)
+    uint256 public kBound;
+    uint256 public sBound;
 
     // Global fee growth per unit of radius (in Q128.128)
     // For Orbital stablecoin pools, we track a single fee accumulator since all tokens are ~equal value
@@ -116,6 +125,7 @@ contract ZorbitalPool {
     error InvalidTickRange();
     error ZeroRadius();
     error InsufficientInputAmount();
+    error InsufficientPosition();
 
     event Mint(
         address sender,
@@ -125,53 +135,107 @@ contract ZorbitalPool {
         uint256[] amounts
     );
 
+    event Burn(
+        address indexed owner,
+        int24 indexed tick,
+        uint128 amount,
+        uint256[] amounts
+    );
+
+    event Collect(
+        address indexed owner,
+        address recipient,
+        int24 indexed tick,
+        uint128 amount
+    );
+
+    struct ModifyPositionParams {
+        address owner;
+        int24 tick;
+        int128 rDelta;
+    }
+
+    /// @notice Internal function to modify a position (add or remove liquidity)
+    /// @dev Used by both mint() and burn()
+    function _modifyPosition(
+        ModifyPositionParams memory params
+    ) internal returns (Position.Info storage position, int256[] memory amounts) {
+        if (params.tick < MIN_TICK || params.tick > MAX_TICK) revert InvalidTickRange();
+
+        Slot0 memory slot0_ = slot0;
+
+        // Update tick state
+        bool flipped = ticks.update(
+            params.tick,
+            params.rDelta,
+            slot0_.tick,
+            feeGrowthGlobalX128
+        );
+
+        if (flipped) {
+            tickBitmap.flipTick(params.tick);
+        }
+
+        // Get fee growth inside this position's boundary
+        uint256 feeGrowthInsideX128 = ticks.getFeeGrowthInside(
+            params.tick,
+            slot0_.tick,
+            feeGrowthGlobalX128
+        );
+
+        // Update position with fee tracking
+        position = positions.get(params.owner, params.tick);
+        position.update(params.rDelta, feeGrowthInsideX128);
+
+        // Calculate token amounts
+        amounts = new int256[](tokens.length);
+        uint256 absRDelta = params.rDelta < 0 ? uint128(-params.rDelta) : uint128(params.rDelta);
+        uint256 amountPerToken = OrbitalMath.calcAmountPerToken(uint128(absRDelta), tokens.length);
+
+        // Determine if this tick is interior (current α inside boundary)
+        bool isInterior = slot0_.tick < params.tick;
+
+        for (uint256 i = 0; i < tokens.length; i++) {
+            if (params.rDelta < 0) {
+                amounts[i] = -int256(amountPerToken);
+            } else {
+                amounts[i] = int256(amountPerToken);
+            }
+        }
+
+        // Update global r if position is interior
+        if (isInterior) {
+            if (params.rDelta < 0) {
+                r -= uint128(-params.rDelta);
+            } else {
+                r += uint128(params.rDelta);
+            }
+        }
+    }
+
     function mint(
         address owner,
         int24 tick,
         uint128 amount,
         bytes calldata data
     ) external returns (uint256[] memory amounts) {
-        if (tick < MIN_TICK || tick > MAX_TICK) revert InvalidTickRange();
         if (amount == 0) revert ZeroRadius();
 
-        Slot0 memory slot0_ = slot0;
-
-        // Determine if this tick is interior (current α inside boundary)
-        bool isInterior = slot0_.tick < tick;
-
-        // In Orbital, positions have only ONE tick (not lowerTick/upperTick)
-        // since ticks are nested and all share the equal-price point as center
-        bool flipped = ticks.update(
-            tick,
-            amount,
-            slot0_.tick,
-            feeGrowthGlobalX128
+        (Position.Info storage position, int256[] memory amountsInt) = _modifyPosition(
+            ModifyPositionParams({
+                owner: owner,
+                tick: tick,
+                rDelta: int128(uint128(amount))
+            })
         );
 
-        if (flipped) {
-            tickBitmap.flipTick(tick);
-        }
-
-        Position.Info storage position = positions.get(owner, tick);
-        position.update(amount);
-
+        // Convert to uint256 amounts for callback
         amounts = new uint256[](tokens.length);
-        uint256 amountPerToken = OrbitalMath.calcAmountPerToken(amount, tokens.length);
-
-        if (isInterior) {
-            // Position is active (current α inside boundary)
-            for (uint256 i = 0; i < tokens.length; i++) {
-                amounts[i] = amountPerToken;
-            }
-
-            r += amount;
-        } else {
-            // Position is inactive (current α at/beyond boundary)
-            for (uint256 i = 0; i < tokens.length; i++) {
-                amounts[i] = amountPerToken;
-            }
+        for (uint256 i = 0; i < tokens.length; i++) {
+            amounts[i] = uint256(amountsInt[i]);
         }
 
+        // Callback for token transfer
         uint256[] memory balancesBefore = new uint256[](tokens.length);
         for (uint256 i = 0; i < tokens.length; i++) {
             balancesBefore[i] = balance(i);
@@ -185,6 +249,69 @@ contract ZorbitalPool {
         }
 
         emit Mint(msg.sender, owner, tick, amount, amounts);
+    }
+
+    /// @notice Remove liquidity from a position
+    /// @param tick The position's boundary tick
+    /// @param amount The amount of radius to remove
+    /// @return amounts The token amounts removed (added to tokensOwed)
+    function burn(
+        int24 tick,
+        uint128 amount
+    ) external returns (uint256[] memory amounts) {
+        (Position.Info storage position, int256[] memory amountsInt) = _modifyPosition(
+            ModifyPositionParams({
+                owner: msg.sender,
+                tick: tick,
+                rDelta: -int128(uint128(amount))
+            })
+        );
+
+        // Convert to uint256 amounts (they come back negative from _modifyPosition)
+        amounts = new uint256[](tokens.length);
+        for (uint256 i = 0; i < tokens.length; i++) {
+            amounts[i] = uint256(-amountsInt[i]);
+        }
+
+        // Add burned amounts to tokensOwed
+        // Note: In Orbital with single accumulator, we track total tokens owed
+        // The burned amounts represent the LP's share that can be collected
+        if (amounts[0] > 0) {
+            // All token amounts are equal for Orbital stablecoin pools
+            position.tokensOwed += uint128(amounts[0] * tokens.length);
+        }
+
+        emit Burn(msg.sender, tick, amount, amounts);
+    }
+
+    /// @notice Collect tokens owed to a position (burned liquidity + fees)
+    /// @param recipient Address to receive the tokens
+    /// @param tick The position's boundary tick
+    /// @param amountRequested Maximum amount to collect
+    /// @return amount The actual amount collected
+    function collect(
+        address recipient,
+        int24 tick,
+        uint128 amountRequested
+    ) external returns (uint128 amount) {
+        Position.Info storage position = positions.get(msg.sender, tick);
+
+        // Collect up to the requested amount
+        amount = amountRequested > position.tokensOwed
+            ? position.tokensOwed
+            : amountRequested;
+
+        if (amount > 0) {
+            position.tokensOwed -= amount;
+
+            // Distribute equally across all tokens (Orbital stablecoin pool)
+            uint256 amountPerToken = amount / tokens.length;
+            for (uint256 i = 0; i < tokens.length; i++) {
+                IERC20(tokens[i]).transfer(recipient, amountPerToken);
+            }
+        }
+
+        emit Collect(msg.sender, recipient, tick, amount);
     }
 
     function balance(uint256 tokenIndex) internal view returns (uint256) {
@@ -229,22 +356,27 @@ contract ZorbitalPool {
             sumSquaredReserves_ += balances[i] * balances[i];
         }
 
-        // Initialize swap state
+        // Initialize swap state (including boundary tick state)
         SwapState memory state = SwapState({
             amountSpecifiedRemaining: amountSpecified,
             amountCalculated: 0,
             sumReserves: sumReserves_,
             tick: slot0_.tick,
             r: r_,
+            kBound: kBound,
+            sBound: sBound,
             feeGrowthGlobalX128: feeGrowthGlobalX128
         });
 
-        // Determine swap direction based on whether S will increase or decrease
-        // In Orbital, swapping in token i and out token j:
-        // - S' = S + amountIn - amountOut
-        // - Direction: lte = true means α decreasing (toward equal-price)
-        // For simplicity, assume swaps that increase S search higher ticks
-        bool lte = false; // Will be determined by price movement
+        // Determine swap direction based on whether we're moving toward or away from equal-price
+        // In Orbital, the equal-price point is where all reserves are equal.
+        // - lte = true: moving toward equal-price (α decreasing, reserves becoming more equal)
+        // - lte = false: moving away from equal-price (α increasing, reserves becoming more unequal)
+        //
+        // When swapping in token i and out token j:
+        // - If balanceIn < balanceOut: adding to low side, removing from high → toward equal (lte = true)
+        // - If balanceIn > balanceOut: adding to high side, removing from low → away (lte = false)
+        bool lte = balances[tokenInIndex] < balances[tokenOutIndex];
 
         // Validate sumReservesLimit (slippage protection)
         // If sumReservesLimit is 0, no limit is applied
@@ -301,8 +433,8 @@ contract ZorbitalPool {
                 balances[tokenInIndex],
                 balances[tokenOutIndex],
                 amountRemainingLessFee,
-                0, // k (boundary k, 0 for interior)
-                0  // s (boundary s, 0 for interior)
+                state.kBound, // Boundary k (sum of all boundary tick k values)
+                state.sBound  // Boundary s (sum of all boundary tick s values)
             );
 
             // Calculate fee amount
@@ -341,13 +473,26 @@ contract ZorbitalPool {
                     // Cross the tick: get radius and update fee tracking
                     uint128 rDelta = ticks.cross(step.nextTick, state.feeGrowthGlobalX128);
 
+                    // Compute k and s for boundary tick state (like Uniswap computes liquidityNet)
+                    (uint256 kDelta, uint256 sDelta) = OrbitalMath.calcBoundaryKS(
+                        step.nextTick,
+                        rDelta,
+                        tokens.length
+                    );
+
                     // In Orbital with nested ticks (from Orbital.md "Crossing Ticks"):
-                    // - lte (toward equal-price, α decreasing): add rDelta (tick becomes interior)
-                    // - !lte (away from equal-price, α increasing): subtract rDelta (tick becomes boundary)
+                    // - lte (toward equal-price, α decreasing): tick becomes interior
+                    //   → add rDelta to r, subtract k/s from boundary
+                    // - !lte (away from equal-price, α increasing): tick becomes boundary
+                    //   → subtract rDelta from r, add k/s to boundary
                     if (lte) {
                         state.r = state.r + rDelta;
+                        state.kBound = state.kBound > kDelta ? state.kBound - kDelta : 0;
+                        state.sBound = state.sBound > sDelta ? state.sBound - sDelta : 0;
                     } else {
                         state.r = state.r - rDelta;
+                        state.kBound = state.kBound + kDelta;
+                        state.sBound = state.sBound + sDelta;
                     }
 
                     if (state.r == 0) revert NotEnoughLiquidity();
@@ -362,6 +507,10 @@ contract ZorbitalPool {
 
         // Update global r if it changed (gas optimization: only write if different)
         if (r_ != state.r) r = state.r;
+
+        // Update global boundary tick state
+        kBound = state.kBound;
+        sBound = state.sBound;
 
         // Update global fee growth
         feeGrowthGlobalX128 = state.feeGrowthGlobalX128;
