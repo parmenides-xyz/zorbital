@@ -62,7 +62,7 @@ contract ZorbitalPoolTest is Test {
         tokens[3] = address(token3);
 
         // Create pool via factory
-        pool = ZorbitalPool(factory.createPool(tokens, 10)); // tickSpacing=10 for stablecoins
+        pool = ZorbitalPool(factory.createPool(tokens, 500)); // fee=500 (0.05%) for stablecoins
 
         // Initialize pool with starting state
         pool.initialize(params.currentSumReserves, params.currentTick);
@@ -127,8 +127,8 @@ contract ZorbitalPoolTest is Test {
         (uint128 posRadius) = pool.positions(positionKey);
         assertEq(posRadius, params.radius, "incorrect position radius");
 
-        // Check tick was initialized (Tick.Info has: initialized, rGross, rNet)
-        (bool tickInitialized, uint128 tickRGross, uint128 tickRNet) = pool.ticks(params.tick);
+        // Check tick was initialized (Tick.Info has: initialized, rGross, rNet, feeGrowthOutsideX128)
+        (bool tickInitialized, uint128 tickRGross, uint128 tickRNet,) = pool.ticks(params.tick);
         assertTrue(tickInitialized, "tick not initialized");
         assertEq(tickRGross, params.radius, "incorrect tick rGross");
         assertEq(tickRNet, params.radius, "incorrect tick rNet");
@@ -208,9 +208,11 @@ contract ZorbitalPoolTest is Test {
 
         // Check pool state
         (uint128 sumReserves, int24 tick,) = pool.slot0();
-        // sumReserves should update: original + amountIn - |amountOut|
+        // sumReserves should update: original + (amountIn - fee) - |amountOut|
+        // Fee is 0.05% (500 hundredths of bps), so fee = amountIn * 500 / 1e6
         uint256 originalSum = 4 * poolBalances[tokenInIndex]; // 4 tokens * 500e18 each = 2000e18
-        uint256 expectedSum = originalSum + uint256(amountIn) - uint256(-amountOut);
+        uint256 feeAmount = (uint256(amountIn) * 500) / 1e6; // 0.05% fee
+        uint256 expectedSum = originalSum + uint256(amountIn) - feeAmount - uint256(-amountOut);
         assertEq(sumReserves, uint128(expectedSum), "invalid sumReserves");
         assertEq(tick, 0, "invalid current tick");
         assertEq(pool.r(), params.radius, "invalid current radius");
@@ -248,7 +250,7 @@ contract ZorbitalPoolTest is Test {
         tokens[2] = address(token2);
         tokens[3] = address(token3);
 
-        pool = ZorbitalPool(factory.createPool(tokens, 10));
+        pool = ZorbitalPool(factory.createPool(tokens, 500)); // fee=500 (0.05%)
         pool.initialize(4000e18, 0);
         shouldTransferInCallback = true;
 
@@ -262,7 +264,7 @@ contract ZorbitalPoolTest is Test {
         assertEq(pool.r(), 1000e18, "combined radius should be 1000e18");
 
         // Check tick has combined rGross and rNet
-        (bool initialized, uint128 rGross, uint128 rNet) = pool.ticks(2000);
+        (bool initialized, uint128 rGross, uint128 rNet,) = pool.ticks(2000);
         assertTrue(initialized, "tick should be initialized");
         assertEq(rGross, 1000e18, "rGross should be combined");
         assertEq(rNet, 1000e18, "rNet should be combined");
@@ -308,7 +310,7 @@ contract ZorbitalPoolTest is Test {
         tokens[2] = address(token2);
         tokens[3] = address(token3);
 
-        pool = ZorbitalPool(factory.createPool(tokens, 10));
+        pool = ZorbitalPool(factory.createPool(tokens, 500)); // fee=500 (0.05%)
         pool.initialize(4000e18, 0);
         shouldTransferInCallback = true;
 
@@ -323,8 +325,8 @@ contract ZorbitalPoolTest is Test {
         assertEq(pool.r(), 1000e18, "combined radius should be 1000e18");
 
         // Check both ticks initialized
-        (bool init1, uint128 rGross1, ) = pool.ticks(1000);
-        (bool init2, uint128 rGross2, ) = pool.ticks(2000);
+        (bool init1, uint128 rGross1,,) = pool.ticks(1000);
+        (bool init2, uint128 rGross2,,) = pool.ticks(2000);
         assertTrue(init1, "tick 1000 should be initialized");
         assertTrue(init2, "tick 2000 should be initialized");
         assertEq(rGross1, 400e18, "tick 1000 rGross");

@@ -1,23 +1,22 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.26;
 
-import "./interfaces/IZorbitalPool.sol";
+import "./ZorbitalPool.sol";
+import "./libraries/Path.sol";
 
 contract ZorbitalQuoter {
-    struct QuoteParams {
-        address pool;
-        uint256 tokenInIndex;
-        uint256 tokenOutIndex;
+    using Path for bytes;
+
+    struct QuoteSingleParams {
+        address poolAddress;
+        address tokenIn;
+        address tokenOut;
         uint256 amountIn;
+        uint128 sumReservesLimit;
     }
 
-    /// @notice Simulates a swap and returns the output amount without executing
-    /// @dev Initiates a real swap but reverts in the callback to capture calculated amounts
-    /// @param params The quote parameters
-    /// @return amountOut The calculated output amount
-    /// @return sumReservesAfter The sum of reserves after the simulated swap
-    /// @return tickAfter The tick after the simulated swap
-    function quote(QuoteParams memory params)
+    /// @notice Simulates a single-pool swap and returns the output amount
+    function quoteSingle(QuoteSingleParams memory params)
         public
         returns (
             uint256 amountOut,
@@ -25,21 +24,83 @@ contract ZorbitalQuoter {
             int24 tickAfter
         )
     {
+        ZorbitalPool pool = ZorbitalPool(params.poolAddress);
+        uint256 tokenInIndex = findTokenIndex(pool, params.tokenIn);
+        uint256 tokenOutIndex = findTokenIndex(pool, params.tokenOut);
+
         try
-            IZorbitalPool(params.pool).swap(
+            pool.swap(
                 address(this),
-                params.tokenInIndex,
-                params.tokenOutIndex,
+                tokenInIndex,
+                tokenOutIndex,
                 params.amountIn,
-                abi.encode(params.pool)
+                params.sumReservesLimit,
+                abi.encode(params.poolAddress)
             )
         {} catch (bytes memory reason) {
             return abi.decode(reason, (uint256, uint128, int24));
         }
     }
 
+    /// @notice Simulates a multi-pool swap following a path
+    /// @param path The swap path (tokenIn + poolAddress + tokenOut + ...)
+    /// @param amountIn The input amount
+    /// @return amountOut The final output amount
+    /// @return sumReservesAfterList Sum of reserves after each pool swap
+    /// @return tickAfterList Tick after each pool swap
+    function quote(bytes memory path, uint256 amountIn)
+        public
+        returns (
+            uint256 amountOut,
+            uint128[] memory sumReservesAfterList,
+            int24[] memory tickAfterList
+        )
+    {
+        uint256 numPools = path.numPools();
+        sumReservesAfterList = new uint128[](numPools);
+        tickAfterList = new int24[](numPools);
+
+        uint256 i = 0;
+        while (true) {
+            (address tokenIn, address poolAddress, address tokenOut) = path.decodeFirstPool();
+
+            (
+                uint256 amountOut_,
+                uint128 sumReservesAfter,
+                int24 tickAfter
+            ) = quoteSingle(
+                    QuoteSingleParams({
+                        poolAddress: poolAddress,
+                        tokenIn: tokenIn,
+                        tokenOut: tokenOut,
+                        amountIn: amountIn,
+                        sumReservesLimit: 0
+                    })
+                );
+
+            sumReservesAfterList[i] = sumReservesAfter;
+            tickAfterList[i] = tickAfter;
+            amountIn = amountOut_;
+            i++;
+
+            if (path.hasMultiplePools()) {
+                path = path.skipToken();
+            } else {
+                amountOut = amountIn;
+                break;
+            }
+        }
+    }
+
+    /// @notice Find token index in pool's token array
+    function findTokenIndex(ZorbitalPool pool, address token) internal view returns (uint256) {
+        for (uint256 i = 0; i < 4; i++) {
+            if (pool.tokens(i) == token) return i;
+        }
+        revert("Token not found in pool");
+    }
+
     /// @notice Swap callback that captures results and reverts
-    /// @dev This is called by the pool during swap simulation
     function zorbitalSwapCallback(
         uint256 /* tokenInIndex */,
         uint256 /* tokenOutIndex */,
@@ -47,14 +108,12 @@ contract ZorbitalQuoter {
         int256 amountOut,
         bytes memory data
     ) external view {
-        address pool = abi.decode(data, (address));
+        address poolAddress = abi.decode(data, (address));
 
-        // amountOut is negative (tokens leaving the pool)
         uint256 amountOutAbs = uint256(-amountOut);
 
-        (uint128 sumReservesAfter, int24 tickAfter) = IZorbitalPool(pool).slot0();
+        (uint128 sumReservesAfter, int24 tickAfter,) = ZorbitalPool(poolAddress).slot0();
 
-        // Revert with the calculated values (gas optimized using assembly)
         assembly {
             let ptr := mload(0x40)
             mstore(ptr, amountOutAbs)

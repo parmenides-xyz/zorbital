@@ -19,12 +19,17 @@ library Tick {
         // Radius to add/subtract when crossing (always positive in Orbital)
         // Direction of crossing determines whether to add or subtract
         uint128 rNet;
+        // Fee growth per unit radius outside this tick (when α was beyond boundary)
+        // For Orbital, we track a single fee accumulator (stablecoins are ~equal value)
+        uint256 feeGrowthOutsideX128;
     }
 
     function update(
         mapping(int24 => Tick.Info) storage self,
         int24 tick,
-        uint128 rDelta
+        uint128 rDelta,
+        int24 currentTick,
+        uint256 feeGrowthGlobalX128
     ) internal returns (bool flipped) {
         Tick.Info storage tickInfo = self[tick];
         uint128 rGrossBefore = tickInfo.rGross;
@@ -34,6 +39,11 @@ library Tick {
 
         if (rGrossBefore == 0) {
             tickInfo.initialized = true;
+            // Initialize feeGrowthOutside: by convention, assume all fees were
+            // accumulated "outside" (when α was below this tick) if currentTick < tick
+            if (currentTick < tick) {
+                tickInfo.feeGrowthOutsideX128 = feeGrowthGlobalX128;
+            }
         }
 
         tickInfo.rGross = rGrossAfter;
@@ -42,16 +52,22 @@ library Tick {
         tickInfo.rNet = tickInfo.rNet + rDelta;
     }
 
-    /// @notice Returns the radius to add/subtract when crossing this tick
-    /// @dev In Orbital, the returned value is always positive.
-    /// The caller determines whether to add or subtract based on swap direction:
-    /// - Moving toward equal-price (α decreasing): add rNet (tick becomes interior)
-    /// - Moving away from equal-price (α increasing): subtract rNet (tick becomes boundary)
+    /// @notice Cross a tick and update fee tracking
+    /// @dev Called when a swap crosses this tick boundary
+    /// @param self The mapping of tick info
+    /// @param tick The tick being crossed
+    /// @param feeGrowthGlobalX128 Current global fee growth
+    /// @return rNet The radius to add/subtract
     function cross(
         mapping(int24 => Tick.Info) storage self,
-        int24 tick
-    ) internal view returns (uint128 rNet) {
+        int24 tick,
+        uint256 feeGrowthGlobalX128
+    ) internal returns (uint128 rNet) {
         Tick.Info storage info = self[tick];
+
+        // Update fee growth outside: flip the perspective
+        info.feeGrowthOutsideX128 = feeGrowthGlobalX128 - info.feeGrowthOutsideX128;
+
         rNet = info.rNet;
     }
 }

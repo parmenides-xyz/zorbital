@@ -33,6 +33,8 @@ contract ZorbitalPool {
         int24 tick;
         // Current consolidated radius (analogous to liquidity L)
         uint128 r;
+        // Fee growth accumulated during this swap
+        uint256 feeGrowthGlobalX128;
     }
 
     /// @notice Maintains state for one iteration of order filling
@@ -50,6 +52,8 @@ contract ZorbitalPool {
         uint256 amountIn;
         // Amount of output tokens produced in this step
         uint256 amountOut;
+        // Fee amount collected in this step
+        uint256 feeAmount;
     }
 
     // Factory that deployed this pool
@@ -58,6 +62,8 @@ contract ZorbitalPool {
     address[] public tokens;
     // Tick spacing for this pool
     int24 public tickSpacing;
+    // Fee amount (in hundredths of basis point, e.g. 500 = 0.05%)
+    uint24 public immutable fee;
 
     // Packing variables that are read together
     struct Slot0 {
@@ -76,6 +82,10 @@ contract ZorbitalPool {
     // Consolidated radius, r (analogue of liquidity L)
     uint128 public r;
 
+    // Global fee growth per unit of radius (in Q128.128)
+    // For Orbital stablecoin pools, we track a single fee accumulator since all tokens are ~equal value
+    uint256 public feeGrowthGlobalX128;
+
     // Ticks info
     mapping(int24 => Tick.Info) public ticks;
     // Tick bitmap for finding initialized ticks
@@ -85,7 +95,7 @@ contract ZorbitalPool {
 
     /// @notice Constructor reads parameters from deployer (Inversion of Control)
     constructor() {
-        (factory, tokens, tickSpacing) = IZorbitalPoolDeployer(msg.sender).parameters();
+        (factory, tokens, tickSpacing, fee) = IZorbitalPoolDeployer(msg.sender).parameters();
     }
 
     error AlreadyInitialized();
@@ -131,7 +141,12 @@ contract ZorbitalPool {
 
         // In Orbital, positions have only ONE tick (not lowerTick/upperTick)
         // since ticks are nested and all share the equal-price point as center
-        bool flipped = ticks.update(tick, amount);
+        bool flipped = ticks.update(
+            tick,
+            amount,
+            slot0_.tick,
+            feeGrowthGlobalX128
+        );
 
         if (flipped) {
             tickBitmap.flipTick(tick);
@@ -220,7 +235,8 @@ contract ZorbitalPool {
             amountCalculated: 0,
             sumReserves: sumReserves_,
             tick: slot0_.tick,
-            r: r_
+            r: r_,
+            feeGrowthGlobalX128: feeGrowthGlobalX128
         });
 
         // Determine swap direction based on whether S will increase or decrease
@@ -266,6 +282,10 @@ contract ZorbitalPool {
 
             // Cap target at sumReservesLimit if more restrictive than tick boundary
             // (mirrors Uniswap V3's sqrtPriceLimitX96 capping in computeSwapStep)
+
+            // Deduct fee from remaining amount before computing swap
+            uint256 amountRemainingLessFee = (state.amountSpecifiedRemaining * (1e6 - fee)) / 1e6;
+
             (step.sumReservesNext, step.amountIn, step.amountOut) = OrbitalMath.computeSwapStep(
                 tokens.length,
                 state.sumReserves,
@@ -280,13 +300,28 @@ contract ZorbitalPool {
                 sumSquaredReserves_,
                 balances[tokenInIndex],
                 balances[tokenOutIndex],
-                state.amountSpecifiedRemaining,
+                amountRemainingLessFee,
                 0, // k (boundary k, 0 for interior)
                 0  // s (boundary s, 0 for interior)
             );
 
-            // Update state
-            state.amountSpecifiedRemaining -= step.amountIn;
+            // Calculate fee amount
+            bool max = step.sumReservesNext == sumReservesTarget;
+            if (!max) {
+                // Didn't reach target: fee is difference between what we had and what was used
+                step.feeAmount = state.amountSpecifiedRemaining - step.amountIn;
+            } else {
+                // Reached target: calculate fee from amountIn
+                step.feeAmount = (step.amountIn * fee) / (1e6 - fee);
+            }
+
+            // Update fee growth (per unit of radius)
+            if (state.r > 0) {
+                state.feeGrowthGlobalX128 += (step.feeAmount << 128) / state.r;
+            }
+
+            // Update state (amountIn includes fee)
+            state.amountSpecifiedRemaining -= (step.amountIn + step.feeAmount);
             state.amountCalculated += step.amountOut;
 
             // Update balances for next iteration
@@ -303,8 +338,8 @@ contract ZorbitalPool {
             if (state.sumReserves == sumReservesTarget) {
                 // We reached the tick boundary
                 if (step.initialized) {
-                    // Cross the tick: get radius (always positive in Orbital)
-                    uint128 rDelta = ticks.cross(step.nextTick);
+                    // Cross the tick: get radius and update fee tracking
+                    uint128 rDelta = ticks.cross(step.nextTick, state.feeGrowthGlobalX128);
 
                     // In Orbital with nested ticks (from Orbital.md "Crossing Ticks"):
                     // - lte (toward equal-price, α decreasing): add rDelta (tick becomes interior)
@@ -327,6 +362,9 @@ contract ZorbitalPool {
 
         // Update global r if it changed (gas optimization: only write if different)
         if (r_ != state.r) r = state.r;
+
+        // Update global fee growth
+        feeGrowthGlobalX128 = state.feeGrowthGlobalX128;
 
         // Update slot0 only if state changed (gas optimization)
         if (state.tick != slot0_.tick) {

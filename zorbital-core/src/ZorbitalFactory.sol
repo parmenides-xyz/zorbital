@@ -7,53 +7,58 @@ interface IZorbitalPoolDeployer {
     function parameters() external view returns (
         address factory,
         address[] memory tokens,
-        int24 tickSpacing
+        int24 tickSpacing,
+        uint24 fee
     );
 }
 
 contract ZorbitalFactory is IZorbitalPoolDeployer {
-    // Supported tick spacings (10 for stablecoins, 60 for others)
-    mapping(int24 => bool) public tickSpacings;
+    // Fee amounts map to tick spacings
+    // Fee is in hundredths of a basis point (1 = 0.0001%, 500 = 0.05%, 3000 = 0.3%)
+    mapping(uint24 => int24) public fees;
 
     // Pool parameters - set temporarily during createPool (Inversion of Control)
     address internal _factory;
     address[] internal _tokens;
     int24 internal _tickSpacing;
+    uint24 internal _fee;
 
     // Registry: salt => pool address
     mapping(bytes32 => address) public pools;
 
-    event PoolCreated(address[] tokens, int24 tickSpacing, address pool);
+    event PoolCreated(address[] tokens, uint24 fee, address pool);
 
     error TokensMustBeDifferent();
     error InvalidTokenCount();
     error TokenCannotBeZero();
     error PoolAlreadyExists();
-    error UnsupportedTickSpacing();
+    error UnsupportedFee();
 
     constructor() {
-        tickSpacings[10] = true;  // High precision for stablecoins
-        tickSpacings[60] = true;  // Lower precision for volatile pairs
+        fees[500] = 10;   // 0.05% fee -> tick spacing 10 (stablecoins)
+        fees[3000] = 60;  // 0.3% fee -> tick spacing 60 (volatile pairs)
     }
 
     function parameters() external view returns (
         address factory,
         address[] memory tokens,
-        int24 tickSpacing
+        int24 tickSpacing,
+        uint24 fee
     ) {
-        return (_factory, _tokens, _tickSpacing);
+        return (_factory, _tokens, _tickSpacing, _fee);
     }
 
     /// @notice Creates a new Orbital pool for the given tokens
     /// @param tokens Array of token addresses (will be sorted)
-    /// @param tickSpacing The tick spacing for this pool
+    /// @param fee The fee amount (500 = 0.05%, 3000 = 0.3%)
     /// @return pool Address of the created pool
     function createPool(
         address[] memory tokens,
-        int24 tickSpacing
+        uint24 fee
     ) public returns (address pool) {
-        // Validate tick spacing
-        if (!tickSpacings[tickSpacing]) revert UnsupportedTickSpacing();
+        // Validate fee and get tick spacing
+        int24 tickSpacing = fees[fee];
+        if (tickSpacing == 0) revert UnsupportedFee();
 
         // Validate token count (need at least 2 tokens)
         if (tokens.length < 2) revert InvalidTokenCount();
@@ -67,14 +72,15 @@ contract ZorbitalFactory is IZorbitalPoolDeployer {
             if (i > 0 && tokens[i] == tokens[i - 1]) revert TokensMustBeDifferent();
         }
 
-        // Check if pool already exists
-        bytes32 salt = keccak256(abi.encodePacked(tokens, tickSpacing));
+        // Check if pool already exists (identified by tokens + fee)
+        bytes32 salt = keccak256(abi.encodePacked(tokens, fee));
         if (pools[salt] != address(0)) revert PoolAlreadyExists();
 
         // Set parameters for pool constructor to read (Inversion of Control)
         _factory = address(this);
         _tokens = tokens;
         _tickSpacing = tickSpacing;
+        _fee = fee;
 
         // Deploy pool with CREATE2
         pool = address(
@@ -85,23 +91,24 @@ contract ZorbitalFactory is IZorbitalPoolDeployer {
         delete _factory;
         delete _tokens;
         delete _tickSpacing;
+        delete _fee;
 
         // Register pool
         pools[salt] = pool;
 
-        emit PoolCreated(tokens, tickSpacing, pool);
+        emit PoolCreated(tokens, fee, pool);
     }
 
-    /// @notice Get pool address for given tokens and tick spacing
+    /// @notice Get pool address for given tokens and fee
     /// @param tokens Array of token addresses (will be sorted)
-    /// @param tickSpacing The tick spacing
+    /// @param fee The fee amount
     /// @return pool Address of the pool (or zero if not exists)
     function getPool(
         address[] memory tokens,
-        int24 tickSpacing
+        uint24 fee
     ) public view returns (address pool) {
         tokens = sortTokens(tokens);
-        bytes32 salt = keccak256(abi.encodePacked(tokens, tickSpacing));
+        bytes32 salt = keccak256(abi.encodePacked(tokens, fee));
         return pools[salt];
     }
 
