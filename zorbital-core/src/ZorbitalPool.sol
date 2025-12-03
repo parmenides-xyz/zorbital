@@ -17,11 +17,7 @@ contract ZorbitalPool {
     using Position for mapping(bytes32 => Position.Info);
     using Position for Position.Info;
 
-    int24 internal constant MIN_TICK = 0;
-    int24 internal constant MAX_TICK = 4055;
-
     /// @notice Maintains the current swap's state
-    /// @dev Adapted from Uniswap V3 for Orbital's multi-token torus invariant
     struct SwapState {
         // Remaining amount of input tokens to be swapped
         uint256 amountSpecifiedRemaining;
@@ -31,7 +27,7 @@ contract ZorbitalPool {
         uint256 sumReserves;
         // Current tick
         int24 tick;
-        // Current consolidated interior radius (analogous to liquidity L)
+        // Current consolidated interior radius
         uint128 r;
         // Boundary tick state for torus invariant
         uint256 kBound;
@@ -41,7 +37,6 @@ contract ZorbitalPool {
     }
 
     /// @notice Maintains state for one iteration of order filling
-    /// @dev In Orbital, ticks are nested boundaries around equal-price point
     struct StepState {
         // Sum of reserves at iteration start
         uint256 sumReservesStart;
@@ -87,12 +82,11 @@ contract ZorbitalPool {
 
     // Boundary tick state (for torus invariant)
     // kBound = sum of k values for all boundary ticks
-    // sBound = sum of s values for all boundary ticks, where s = sqrt(r² - (k - r√n)²)
+    // sBound = sum of s values for all boundary ticks
     uint256 public kBound;
     uint256 public sBound;
 
-    // Global fee growth per unit of radius (in Q128.128)
-    // For Orbital stablecoin pools, we track a single fee accumulator since all tokens are ~equal value
+    // Global fee growth per unit of radius
     uint256 public feeGrowthGlobalX128;
 
     // Ticks info
@@ -109,7 +103,7 @@ contract ZorbitalPool {
 
     error AlreadyInitialized();
 
-    /// @notice Initialize pool with starting state (called after deployment)
+    /// @notice Initialize pool with starting state
     /// @param sumReserves Initial sum of reserves
     /// @param tick Initial tick
     function initialize(uint128 sumReserves, int24 tick) public {
@@ -160,7 +154,9 @@ contract ZorbitalPool {
     function _modifyPosition(
         ModifyPositionParams memory params
     ) internal returns (Position.Info storage position, int256[] memory amounts) {
-        if (params.tick < MIN_TICK || params.tick > MAX_TICK) revert InvalidTickRange();
+        // Validate tick is within valid k^norm bounds for this pool's n
+        // k^norm_min = √n - 1, k^norm_max = (n-1)/√n
+        if (!OrbitalMath.isValidTick(params.tick, tokens.length)) revert InvalidTickRange();
 
         Slot0 memory slot0_ = slot0;
 
@@ -203,12 +199,27 @@ contract ZorbitalPool {
             }
         }
 
-        // Update global r if position is interior
+        // Update global state based on whether position is interior or boundary
         if (isInterior) {
+            // Interior tick: update consolidated radius r
             if (params.rDelta < 0) {
                 r -= uint128(-params.rDelta);
             } else {
                 r += uint128(params.rDelta);
+            }
+        } else {
+            // Boundary tick: update kBound and sBound
+            (uint256 kDelta, uint256 sDelta) = OrbitalMath.calcBoundaryKS(
+                params.tick,
+                absRDelta,
+                tokens.length
+            );
+            if (params.rDelta < 0) {
+                kBound = kBound > kDelta ? kBound - kDelta : 0;
+                sBound = sBound > sDelta ? sBound - sDelta : 0;
+            } else {
+                kBound += kDelta;
+                sBound += sDelta;
             }
         }
     }
@@ -390,7 +401,7 @@ contract ZorbitalPool {
         }
 
         // Fill the order by iterating through ticks
-        // Stop if: amount filled OR sumReserves hits limit (slippage protection)
+        // Stop if: amount filled OR sumReserves hits limit
         while (
             state.amountSpecifiedRemaining > 0 &&
             (sumReservesLimit == 0 || uint128(state.sumReserves) != sumReservesLimit)
@@ -440,7 +451,7 @@ contract ZorbitalPool {
             // Calculate fee amount
             bool max = step.sumReservesNext == sumReservesTarget;
             if (!max) {
-                // Didn't reach target: fee is difference between what we had and what was used
+                // Didn't reach target
                 step.feeAmount = state.amountSpecifiedRemaining - step.amountIn;
             } else {
                 // Reached target: calculate fee from amountIn
@@ -466,7 +477,7 @@ contract ZorbitalPool {
                 - 2 * step.amountOut * (balances[tokenOutIndex] + step.amountOut) + step.amountOut * step.amountOut;
             state.sumReserves = step.sumReservesNext;
 
-            // Check if we reached a tick boundary (like Uniswap V3's sqrtPriceX96 == sqrtPriceNextX96)
+            // Check if we reached a tick boundary
             if (state.sumReserves == sumReservesTarget) {
                 // We reached the tick boundary
                 if (step.initialized) {

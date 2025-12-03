@@ -119,6 +119,34 @@ library OrbitalMath {
         }
     }
 
+    /// @notice Calculates k^norm_min = √n - 1 (minimum valid normalized boundary)
+    /// @dev From spec: the minimal tick boundary is the equal price point
+    /// @param n The number of tokens
+    /// @return kNormMin The minimum valid k^norm value (in WAD)
+    function kNormMin(uint256 n) internal pure returns (uint256) {
+        uint256 sqrtN = FixedPointMathLib.sqrt(n * WAD * WAD);
+        return sqrtN - WAD;  // √n - 1
+    }
+
+    /// @notice Calculates k^norm_max = (n-1)/√n (maximum valid normalized boundary)
+    /// @dev From spec: the maximal tick is where one reserve hits 0, others at r
+    /// @param n The number of tokens
+    /// @return kNormMax The maximum valid k^norm value (in WAD)
+    function kNormMax(uint256 n) internal pure returns (uint256) {
+        uint256 sqrtN = FixedPointMathLib.sqrt(n * WAD * WAD);
+        return ((n - 1) * WAD).mulDivDown(WAD, sqrtN);  // (n-1)/√n
+    }
+
+    /// @notice Validates that a tick's k^norm is within valid bounds for n tokens
+    /// @param tick The tick index
+    /// @param n The number of tokens
+    /// @return valid True if the tick is within valid bounds
+    function isValidTick(int24 tick, uint256 n) internal pure returns (bool valid) {
+        if (tick < 0) return false;
+        uint256 kNorm = tickToKNorm(tick);
+        return kNorm >= kNormMin(n) && kNorm <= kNormMax(n);
+    }
+
     /// @notice Calculates the sum of reserves S at which α^norm = k^norm
     /// @dev At boundary: α/r = k^norm, so S = k^norm * r * √n
     function calcSumReservesAtTick(
