@@ -9,6 +9,7 @@ import "./interfaces/IERC20.sol";
 import "./interfaces/IZorbitalMintCallback.sol";
 import "./interfaces/IZorbitalSwapCallback.sol";
 import "./interfaces/IZorbitalFlashCallback.sol";
+import "./ZorbitalFactory.sol";
 
 contract ZorbitalPool {
     using Tick for mapping(int24 => Tick.Info);
@@ -51,8 +52,12 @@ contract ZorbitalPool {
         uint256 amountOut;
     }
 
-    // Pool tokens (n tokens)
+    // Factory that deployed this pool
+    address public factory;
+    // Pool tokens (n tokens, sorted)
     address[] public tokens;
+    // Tick spacing for this pool
+    int24 public tickSpacing;
 
     // Packing variables that are read together
     struct Slot0 {
@@ -60,6 +65,8 @@ contract ZorbitalPool {
         uint128 sumReserves;
         // Current tick
         int24 tick;
+        // Whether pool has been initialized
+        bool initialized;
     }
     Slot0 public slot0;
 
@@ -76,14 +83,24 @@ contract ZorbitalPool {
     // Positions info
     mapping(bytes32 => Position.Info) public positions;
 
-    constructor(
-        address[] memory tokens_,
-        uint128 sumReserves,
-        int24 tick
-    ) {
-        tokens = tokens_;
+    /// @notice Constructor reads parameters from deployer (Inversion of Control)
+    constructor() {
+        (factory, tokens, tickSpacing) = IZorbitalPoolDeployer(msg.sender).parameters();
+    }
 
-        slot0 = Slot0({sumReserves: sumReserves, tick: tick});
+    error AlreadyInitialized();
+
+    /// @notice Initialize pool with starting state (called after deployment)
+    /// @param sumReserves Initial sum of reserves
+    /// @param tick Initial tick
+    function initialize(uint128 sumReserves, int24 tick) public {
+        if (slot0.initialized) revert AlreadyInitialized();
+
+        slot0 = Slot0({
+            sumReserves: sumReserves,
+            tick: tick,
+            initialized: true
+        });
     }
 
     error InvalidTickRange();

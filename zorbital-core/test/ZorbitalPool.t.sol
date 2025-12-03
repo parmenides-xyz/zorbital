@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import "forge-std/Test.sol";
 import "./ERC20Mintable.sol";
 import "../src/ZorbitalPool.sol";
+import "../src/ZorbitalFactory.sol";
 
 contract ZorbitalPoolTest is Test {
     ERC20Mintable token0;
@@ -11,6 +12,7 @@ contract ZorbitalPoolTest is Test {
     ERC20Mintable token2;
     ERC20Mintable token3;
     ZorbitalPool pool;
+    ZorbitalFactory factory;
 
     bool shouldTransferInCallback;
 
@@ -32,6 +34,16 @@ contract ZorbitalPoolTest is Test {
         token1 = new ERC20Mintable("USDT", "USDT", 18);
         token2 = new ERC20Mintable("DAI", "DAI", 18);
         token3 = new ERC20Mintable("FRAX", "FRAX", 18);
+
+        factory = new ZorbitalFactory();
+    }
+
+    /// @notice Find the index of a token in the pool's sorted token array
+    function findTokenIndex(address token) internal view returns (uint256) {
+        for (uint256 i = 0; i < 4; i++) {
+            if (pool.tokens(i) == token) return i;
+        }
+        revert("Token not found in pool");
     }
 
     function setupTestCase(TestCaseParams memory params)
@@ -49,11 +61,11 @@ contract ZorbitalPoolTest is Test {
         tokens[2] = address(token2);
         tokens[3] = address(token3);
 
-        pool = new ZorbitalPool(
-            tokens,
-            params.currentSumReserves,
-            params.currentTick
-        );
+        // Create pool via factory
+        pool = ZorbitalPool(factory.createPool(tokens, 10)); // tickSpacing=10 for stablecoins
+
+        // Initialize pool with starting state
+        pool.initialize(params.currentSumReserves, params.currentTick);
 
         shouldTransferInCallback = params.shouldTransferInCallback;
 
@@ -122,9 +134,10 @@ contract ZorbitalPoolTest is Test {
         assertEq(tickRNet, params.radius, "incorrect tick rNet");
 
         // Check slot0 and r
-        (uint128 sumReserves, int24 tick) = pool.slot0();
+        (uint128 sumReserves, int24 tick, bool initialized) = pool.slot0();
         assertEq(sumReserves, params.currentSumReserves, "invalid sumReserves");
         assertEq(tick, params.currentTick, "invalid current tick");
+        assertTrue(initialized, "pool not initialized");
         assertEq(pool.r(), params.radius, "invalid current radius");
     }
 
@@ -147,14 +160,18 @@ contract ZorbitalPoolTest is Test {
         uint256 swapAmount = 10e18;
         token0.mint(address(this), swapAmount);
 
+        // Find correct indices after token sorting
+        uint256 tokenInIndex = findTokenIndex(address(token0));
+        uint256 tokenOutIndex = findTokenIndex(address(token1));
+
         uint256 userBalance0Before = token0.balanceOf(address(this));
         uint256 userBalance1Before = token1.balanceOf(address(this));
 
         // Swap USDC (token0) for USDT (token1) with specified amount
         (int256 amountIn, int256 amountOut) = pool.swap(
             address(this),
-            0,
-            1,
+            tokenInIndex,
+            tokenOutIndex,
             swapAmount,
             0, // sumReservesLimit (0 = no slippage limit)
             ""
@@ -177,22 +194,22 @@ contract ZorbitalPoolTest is Test {
             "invalid user USDT balance"
         );
 
-        // Check pool balances
+        // Check pool balances (use correct indices after sorting)
         assertEq(
             token0.balanceOf(address(pool)),
-            poolBalances[0] + uint256(amountIn),
+            poolBalances[tokenInIndex] + uint256(amountIn),
             "invalid pool USDC balance"
         );
         assertEq(
             token1.balanceOf(address(pool)),
-            poolBalances[1] - uint256(-amountOut),
+            poolBalances[tokenOutIndex] - uint256(-amountOut),
             "invalid pool USDT balance"
         );
 
         // Check pool state
-        (uint128 sumReserves, int24 tick) = pool.slot0();
+        (uint128 sumReserves, int24 tick,) = pool.slot0();
         // sumReserves should update: original + amountIn - |amountOut|
-        uint256 originalSum = 4 * poolBalances[0]; // 4 tokens * 500e18 each = 2000e18
+        uint256 originalSum = 4 * poolBalances[tokenInIndex]; // 4 tokens * 500e18 each = 2000e18
         uint256 expectedSum = originalSum + uint256(amountIn) - uint256(-amountOut);
         assertEq(sumReserves, uint128(expectedSum), "invalid sumReserves");
         assertEq(tick, 0, "invalid current tick");
@@ -207,10 +224,8 @@ contract ZorbitalPoolTest is Test {
         bytes calldata /* data */
     ) public {
         if (amountIn > 0) {
-            if (tokenInIndex == 0) token0.transfer(msg.sender, uint256(amountIn));
-            if (tokenInIndex == 1) token1.transfer(msg.sender, uint256(amountIn));
-            if (tokenInIndex == 2) token2.transfer(msg.sender, uint256(amountIn));
-            if (tokenInIndex == 3) token3.transfer(msg.sender, uint256(amountIn));
+            // Transfer the token at the correct index (tokens are sorted in pool)
+            ERC20Mintable(pool.tokens(tokenInIndex)).transfer(msg.sender, uint256(amountIn));
         }
     }
 
@@ -233,7 +248,8 @@ contract ZorbitalPoolTest is Test {
         tokens[2] = address(token2);
         tokens[3] = address(token3);
 
-        pool = new ZorbitalPool(tokens, 4000e18, 0);
+        pool = ZorbitalPool(factory.createPool(tokens, 10));
+        pool.initialize(4000e18, 0);
         shouldTransferInCallback = true;
 
         // First LP: mint at tick 2000
@@ -255,10 +271,14 @@ contract ZorbitalPoolTest is Test {
         uint256 swapAmount = 10e18;
         token0.mint(address(this), swapAmount);
 
+        // Find correct indices after token sorting
+        uint256 tokenInIndex = findTokenIndex(address(token0));
+        uint256 tokenOutIndex = findTokenIndex(address(token1));
+
         (int256 amountIn, int256 amountOut) = pool.swap(
             address(this),
-            0, // tokenIn: USDC
-            1, // tokenOut: USDT
+            tokenInIndex,
+            tokenOutIndex,
             swapAmount,
             0, // sumReservesLimit (0 = no slippage limit)
             ""
@@ -288,7 +308,8 @@ contract ZorbitalPoolTest is Test {
         tokens[2] = address(token2);
         tokens[3] = address(token3);
 
-        pool = new ZorbitalPool(tokens, 4000e18, 0);
+        pool = ZorbitalPool(factory.createPool(tokens, 10));
+        pool.initialize(4000e18, 0);
         shouldTransferInCallback = true;
 
         // Tick 1000: closer boundary (smaller k)
