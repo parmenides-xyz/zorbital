@@ -71,7 +71,6 @@ contract ZorbitalPool {
     /// @param initialSumReserves Initial sum of reserves
     /// @param tick Initial tick
     /// @dev Assumes pool starts at equal-price point (all balances equal)
-    ///      so Q = n * (S/n)² = S²/n
     function initialize(uint128 initialSumReserves, int24 tick) public {
         if (slot0.initialized) revert AlreadyInitialized();
 
