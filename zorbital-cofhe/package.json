@@ -6,7 +6,8 @@
     "compile": "hardhat compile",
     "clean": "rimraf ./artifacts ./cache ./types",
     "test": "hardhat test",
-    "deploy:base-sepolia": "hardhat deploy-orbital-private --network base-sepolia"
+    "deploy": "hardhat run scripts/deploy.ts",
+    "deploy:base-sepolia": "hardhat run scripts/deploy.ts --network base-sepolia"
   },
   "devDependencies": {
     "@fhenixprotocol/cofhe-contracts": "^0.0.13",
