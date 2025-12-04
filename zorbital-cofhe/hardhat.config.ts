@@ -3,6 +3,7 @@ import "@nomicfoundation/hardhat-toolbox";
 import "@nomicfoundation/hardhat-ethers";
 import "cofhe-hardhat-plugin";
 import * as dotenv from "dotenv";
+import "./tasks";
 
 dotenv.config();
 
