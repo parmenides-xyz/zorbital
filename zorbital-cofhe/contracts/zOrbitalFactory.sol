@@ -9,7 +9,7 @@ contract zOrbitalFactory is IzOrbitalDeployer {
     // Pool parameters - set temporarily during createPool (Inversion of Control)
     address internal _factory;
     address[] internal _tokens;
-    uint128 internal _radius;
+    uint64 internal _radius;
 
     // Registry: salt => pool address
     mapping(bytes32 => address) public pools;
@@ -17,7 +17,7 @@ contract zOrbitalFactory is IzOrbitalDeployer {
     // All created pools
     address[] public allPools;
 
-    event PoolCreated(address[] tokens, uint128 radius, address pool);
+    event PoolCreated(address[] tokens, uint64 radius, address pool);
 
     error TokensMustBeDifferent();
     error InvalidTokenCount();
@@ -28,7 +28,7 @@ contract zOrbitalFactory is IzOrbitalDeployer {
     function parameters() external view returns (
         address factory,
         address[] memory tokens,
-        uint128 radius
+        uint64 radius
     ) {
         return (_factory, _tokens, _radius);
     }
@@ -39,7 +39,7 @@ contract zOrbitalFactory is IzOrbitalDeployer {
     /// @return pool Address of the created pool
     function createPool(
         address[] memory tokens,
-        uint128 radius
+        uint64 radius
     ) public returns (address pool) {
         // Validate radius
         if (radius == 0) revert InvalidRadius();
@@ -88,7 +88,7 @@ contract zOrbitalFactory is IzOrbitalDeployer {
     /// @return pool Address of the pool (or zero if not exists)
     function getPool(
         address[] memory tokens,
-        uint128 radius
+        uint64 radius
     ) public view returns (address pool) {
         tokens = sortTokens(tokens);
         bytes32 salt = keccak256(abi.encodePacked(tokens, radius));

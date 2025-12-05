@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {IFHERC20} from "./interface/IFHERC20.sol";
-import {FHE, InEuint128, euint128, ebool} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {IFHERC20} from "./interfaces/IFHERC20.sol";
+import {FHE, InEuint64, euint64, ebool} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 
 /// @title zOrbital - Private N-Dimensional Sphere AMM
 /// @notice Fully private swaps using FHE on the Sphere AMM formula
@@ -13,7 +13,7 @@ interface IzOrbitalDeployer {
     function parameters() external view returns (
         address factory,
         address[] memory tokens,
-        uint128 radius
+        uint64 radius
     );
 }
 
@@ -30,22 +30,22 @@ contract zOrbital {
     uint256 public immutable n;
 
     /// @notice Encrypted liquidity reserves for each token
-    mapping(uint256 => euint128) public liquidity;
+    mapping(uint256 => euint64) public liquidity;
 
     /// @notice Sphere radius parameter (encrypted)
-    euint128 public radius;
+    euint64 public radius;
 
     /// @notice Total LP shares
-    euint128 public s_totalShares;
+    euint64 public s_totalShares;
 
     /// @notice User LP shares
-    mapping(address => euint128) public s_userLiquidityShares;
+    mapping(address => euint64) public s_userLiquidityShares;
 
     // ============ Constants ============
 
-    euint128 private immutable ZERO;
-    euint128 private immutable ONE;
-    euint128 private immutable TWO;
+    euint64 private immutable ZERO;
+    euint64 private immutable ONE;
+    euint64 private immutable TWO;
 
     /// @notice Number of Newton-Raphson iterations for sqrt (no decryption)
     uint256 private constant SQRT_ITERATIONS = 8;
@@ -61,7 +61,7 @@ contract zOrbital {
     /// @notice Creates pool - reads parameters from factory (Inversion of Control)
     constructor() {
         // Read parameters from factory
-        (address _factory, address[] memory _tokens, uint128 _radius) =
+        (address _factory, address[] memory _tokens, uint64 _radius) =
             IzOrbitalDeployer(msg.sender).parameters();
 
         require(_tokens.length >= 2, "Need at least 2 tokens");
@@ -74,10 +74,10 @@ contract zOrbital {
         }
 
         // Initialize FHE constants
-        ZERO = FHE.asEuint128(0);
-        ONE = FHE.asEuint128(1);
-        TWO = FHE.asEuint128(2);
-        radius = FHE.asEuint128(_radius);
+        ZERO = FHE.asEuint64(0);
+        ONE = FHE.asEuint64(1);
+        TWO = FHE.asEuint64(2);
+        radius = FHE.asEuint64(_radius);
         s_totalShares = ZERO;
 
         // Initialize liquidity to zero for all tokens
@@ -103,22 +103,22 @@ contract zOrbital {
     function swap(
         uint256 tokenInIndex,
         uint256 tokenOutIndex,
-        InEuint128 calldata sellAmountIn
+        InEuint64 calldata sellAmountIn
     ) external {
         require(tokenInIndex < n && tokenOutIndex < n, "Invalid token index");
         require(tokenInIndex != tokenOutIndex, "Same token");
 
-        euint128 sellAmount = FHE.asEuint128(sellAmountIn);
+        euint64 sellAmount = FHE.asEuint64(sellAmountIn);
 
         // Transfer in the sell token (transfer 0 to others to hide direction)
         for (uint256 i = 0; i < n; i++) {
-            euint128 transferAmount = FHE.select(
-                FHE.eq(FHE.asEuint128(uint128(i)), FHE.asEuint128(uint128(tokenInIndex))),
+            euint64 transferAmount = FHE.select(
+                FHE.eq(FHE.asEuint64(uint64(i)), FHE.asEuint64(uint64(tokenInIndex))),
                 sellAmount,
                 ZERO
             );
             FHE.allow(transferAmount, address(tokens[i]));
-            tokens[i].transferFromEncrypted(msg.sender, address(this), transferAmount);
+            tokens[i].confidentialTransferFrom(msg.sender, address(this), transferAmount);
         }
 
         // Calculate output amount using sphere formula
@@ -132,29 +132,29 @@ contract zOrbital {
         // (r - newReserveOut)² = r² - (r - newReserveIn)² - Σ_{k≠in,out}(r - xₖ)²
         // newReserveOut = r - sqrt(r² - (r - newReserveIn)² - Σ_{k≠in,out}(r - xₖ)²)
 
-        euint128 newReserveIn = FHE.add(liquidity[tokenInIndex], sellAmount);
+        euint64 newReserveIn = FHE.add(liquidity[tokenInIndex], sellAmount);
 
         // Calculate sum of (r - xₖ)² for all k except tokenOut
-        euint128 sumSquares = ZERO;
+        euint64 sumSquares = ZERO;
         for (uint256 k = 0; k < n; k++) {
             if (k == tokenOutIndex) continue;
 
-            euint128 reserve = (k == tokenInIndex) ? newReserveIn : liquidity[k];
-            euint128 diff = FHE.sub(radius, reserve);
-            euint128 diffSquared = FHE.mul(diff, diff);
+            euint64 reserve = (k == tokenInIndex) ? newReserveIn : liquidity[k];
+            euint64 diff = FHE.sub(radius, reserve);
+            euint64 diffSquared = FHE.mul(diff, diff);
             sumSquares = FHE.add(sumSquares, diffSquared);
         }
 
         // (r - newReserveOut)² = r² - sumSquares
-        euint128 radiusSquared = FHE.mul(radius, radius);
-        euint128 outDiffSquared = FHE.sub(radiusSquared, sumSquares);
+        euint64 radiusSquared = FHE.mul(radius, radius);
+        euint64 outDiffSquared = FHE.sub(radiusSquared, sumSquares);
 
         // newReserveOut = r - sqrt(outDiffSquared)
-        euint128 outDiff = _sqrtFHE(outDiffSquared);
-        euint128 newReserveOut = FHE.sub(radius, outDiff);
+        euint64 outDiff = _sqrtFHE(outDiffSquared);
+        euint64 newReserveOut = FHE.sub(radius, outDiff);
 
         // amountOut = oldReserveOut - newReserveOut
-        euint128 amountOut = FHE.sub(liquidity[tokenOutIndex], newReserveOut);
+        euint64 amountOut = FHE.sub(liquidity[tokenOutIndex], newReserveOut);
 
         // Update liquidity
         liquidity[tokenInIndex] = newReserveIn;
@@ -165,13 +165,13 @@ contract zOrbital {
 
         // Transfer out the bought token (transfer 0 from others to hide direction)
         for (uint256 i = 0; i < n; i++) {
-            euint128 transferAmount = FHE.select(
-                FHE.eq(FHE.asEuint128(uint128(i)), FHE.asEuint128(uint128(tokenOutIndex))),
+            euint64 transferAmount = FHE.select(
+                FHE.eq(FHE.asEuint64(uint64(i)), FHE.asEuint64(uint64(tokenOutIndex))),
                 amountOut,
                 ZERO
             );
             FHE.allow(transferAmount, address(tokens[i]));
-            tokens[i].transferEncrypted(msg.sender, transferAmount);
+            tokens[i].confidentialTransfer(msg.sender, transferAmount);
         }
 
         emit Swap(tokenInIndex, tokenOutIndex);
@@ -181,12 +181,12 @@ contract zOrbital {
 
     /// @notice Add liquidity to the pool
     /// @param maxAmounts Maximum amounts of each token to deposit
-    function addLiquidity(InEuint128[] calldata maxAmounts) external {
+    function addLiquidity(InEuint64[] calldata maxAmounts) external {
         require(maxAmounts.length == n, "Wrong number of amounts");
 
-        euint128[] memory amounts = new euint128[](n);
+        euint64[] memory amounts = new euint64[](n);
         for (uint256 i = 0; i < n; i++) {
-            amounts[i] = FHE.asEuint128(maxAmounts[i]);
+            amounts[i] = FHE.asEuint64(maxAmounts[i]);
         }
 
         // Check if this is first liquidity provision
@@ -194,19 +194,19 @@ contract zOrbital {
 
         // For first liquidity, use provided amounts directly
         // For subsequent, calculate proportional amounts based on sphere constraint
-        euint128[] memory optAmounts = new euint128[](n);
+        euint64[] memory optAmounts = new euint64[](n);
 
         for (uint256 i = 0; i < n; i++) {
             // Simple approach: accept max amounts (could be optimized)
             optAmounts[i] = amounts[i];
 
             FHE.allow(optAmounts[i], address(tokens[i]));
-            tokens[i].transferFromEncrypted(msg.sender, address(this), optAmounts[i]);
+            tokens[i].confidentialTransferFrom(msg.sender, address(this), optAmounts[i]);
         }
 
         // Calculate LP shares: sqrt of product of first two amounts (simplified)
-        euint128 shareProduct = FHE.mul(optAmounts[0], optAmounts[1]);
-        euint128 poolShares = _sqrtFHE(shareProduct);
+        euint64 shareProduct = FHE.mul(optAmounts[0], optAmounts[1]);
+        euint64 poolShares = _sqrtFHE(shareProduct);
 
         // Update liquidity for all tokens
         for (uint256 i = 0; i < n; i++) {
@@ -231,26 +231,26 @@ contract zOrbital {
     /// @dev No decryption needed - purely FHE operations
     /// @param y The value to compute sqrt of
     /// @return z The approximate square root
-    function _sqrtFHE(euint128 y) internal returns (euint128 z) {
+    function _sqrtFHE(euint64 y) internal returns (euint64 z) {
         // Newton-Raphson: x_{n+1} = (x_n + y/x_n) / 2
         // Starting guess: y / 2 + 1
 
         // Check if y is zero or very small
-        ebool isSmall = FHE.lte(y, FHE.asEuint128(3));
+        ebool isSmall = FHE.lte(y, FHE.asEuint64(3));
 
         // Initial guess: y/2 + 1
-        euint128 x = FHE.add(FHE.div(y, TWO), ONE);
+        euint64 x = FHE.add(FHE.div(y, TWO), ONE);
 
         // Fixed number of iterations (no branching on encrypted values)
         for (uint256 i = 0; i < SQRT_ITERATIONS; i++) {
             // x = (y/x + x) / 2
-            euint128 yDivX = FHE.div(y, x);
-            euint128 sum = FHE.add(yDivX, x);
+            euint64 yDivX = FHE.div(y, x);
+            euint64 sum = FHE.add(yDivX, x);
             x = FHE.div(sum, TWO);
         }
 
         // For small values (0-3), result is 0 for y=0, 1 otherwise
-        euint128 smallResult = FHE.select(FHE.eq(y, ZERO), ZERO, ONE);
+        euint64 smallResult = FHE.select(FHE.eq(y, ZERO), ZERO, ONE);
 
         // Return small result for small inputs, Newton-Raphson result otherwise
         z = FHE.select(isSmall, smallResult, x);

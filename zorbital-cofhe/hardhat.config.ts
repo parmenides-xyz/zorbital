@@ -18,6 +18,12 @@ const config: HardhatUserConfig = {
       },
     },
   },
+  paths: {
+    sources: "./contracts",
+    tests: "./test",
+    cache: "./cache",
+    artifacts: "./artifacts"
+  },
   defaultNetwork: "hardhat",
   networks: {
     "base-sepolia": {
