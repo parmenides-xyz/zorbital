@@ -1,0 +1,22 @@
+{
+  "name": "orbital-core",
+  "version": "0.1.0",
+  "description": "Orbital Sphere AMM",
+  "scripts": {
+    "test": "forge test",
+    "build": "forge build",
+    "initialize": "npx ts-node scripts/initialize.ts",
+    "faucet": "npx ts-node scripts/faucet.ts",
+    "approve": "npx ts-node scripts/approve.ts",
+    "add-liquidity": "npx ts-node scripts/addLiquidity.ts",
+    "swap": "npx ts-node scripts/swap.ts",
+    "balances": "npx ts-node scripts/balances.ts"
+  },
+  "devDependencies": {
+    "@openzeppelin/contracts": "^5.0.0",
+    "dotenv": "^16.4.7",
+    "ethers": "^6.4.0",
+    "ts-node": ">=8.0.0",
+    "typescript": ">=4.5.0"
+  }
+}

@@ -1,0 +1,3 @@
+[submodule "orbital-core/lib/openzeppelin-contracts"]
+	path = orbital-core/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
