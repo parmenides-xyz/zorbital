@@ -33,10 +33,10 @@ task('add-liquidity', 'add liquidity to zOrbital pool')
 
     console.log(`\nAdding ${amount} of each token as liquidity...`);
 
-    // Encrypt amounts for each token
+    // Encrypt amounts for each token (using uint64 for FHERC20)
     const encAmounts = [];
     for (let i = 0; i < tokens.length; i++) {
-        const encrypted = await cofhejs.encrypt([Encryptable.uint128(amount)]);
+        const encrypted = await cofhejs.encrypt([Encryptable.uint64(amount)]);
         if (!encrypted.success || encrypted.data === null) {
             console.error('Encryption failed:', encrypted.error);
             return;
@@ -52,8 +52,8 @@ task('add-liquidity', 'add liquidity to zOrbital pool')
 });
 
 task('swap', 'swap tokens on zOrbital pool')
-.addParam('tokenin', 'index of token to sell (0=eUSDC, 1=eUSDT, 2=eDAI)')
-.addParam('tokenout', 'index of token to buy (0=eUSDC, 1=eUSDT, 2=eDAI)')
+.addParam('tokenin', 'index of token to sell (0=eUSDC, 1=eUSDT, 2=ePYUSD)')
+.addParam('tokenout', 'index of token to buy (0=eUSDC, 1=eUSDT, 2=ePYUSD)')
 .addParam('amount', 'amount to swap')
 .setAction(async (taskArgs, hre) => {
     const [signer] = await hre.ethers.getSigners();
@@ -67,8 +67,8 @@ task('swap', 'swap tokens on zOrbital pool')
 
     console.log(`\nSwapping ${amount} ${tokenNames[tokenInIndex]} -> ${tokenNames[tokenOutIndex]}...`);
 
-    // Encrypt the swap amount
-    const encrypted = await cofhejs.encrypt([Encryptable.uint128(amount)]);
+    // Encrypt the swap amount (using uint64 for FHERC20)
+    const encrypted = await cofhejs.encrypt([Encryptable.uint64(amount)]);
     if (!encrypted.success || encrypted.data === null) {
         console.error('Encryption failed:', encrypted.error);
         return;
@@ -79,23 +79,4 @@ task('swap', 'swap tokens on zOrbital pool')
 
     console.log('Swap executed successfully!');
     console.log('Transaction hash:', tx.hash);
-});
-
-task('approve-pool', 'approve pool to spend tokens')
-.addParam('token', 'token index (0=eUSDC, 1=eUSDT, 2=eDAI)')
-.addParam('amount', 'amount to approve')
-.setAction(async (taskArgs, hre) => {
-    const [signer] = await hre.ethers.getSigners();
-
-    const tokenIndex = parseInt(taskArgs.token);
-    const amount = BigInt(taskArgs.amount);
-
-    const token = (await hre.ethers.getContractAt('HybridFHERC20', tokens[tokenIndex])).connect(signer);
-
-    console.log(`Approving pool to spend ${amount} ${tokenNames[tokenIndex]}...`);
-
-    const tx = await token.approve(poolAddress, amount);
-    await tx.wait();
-
-    console.log('Approved! TX:', tx.hash);
 });
