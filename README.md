@@ -38,6 +38,8 @@ Deployed on Base Sepolia:
 - Low gas costs make FHE operations economically viable
 - EVM compatibility with existing tooling! FHE operations work natively on EVM-compatible blockchains.
 
+Access a live deployment on Phala Cloud (verifiable cloud computing for private AI) [here](https://7ab039f3f4336135607bd2fdf50f1bbe9f524c18-3000.dstack-pha-prod7.phala.network/).
+
 ## Architecture
 
 ```
