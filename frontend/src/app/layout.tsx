@@ -1,30 +1,12 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import localFont from "next/font/local";
-import { SafeArea } from "@coinbase/onchainkit/minikit";
-import { minikitConfig } from "../../minikit.config";
 import { Providers } from "./providers";
 import "./globals.css";
 
-export async function generateMetadata(): Promise<Metadata> {
-  return {
-    title: minikitConfig.miniapp.name,
-    description: minikitConfig.miniapp.description,
-    other: {
-      "fc:frame": JSON.stringify({
-        version: minikitConfig.miniapp.version,
-        imageUrl: minikitConfig.miniapp.heroImageUrl,
-        button: {
-          title: ` ${minikitConfig.miniapp.name}`,
-          action: {
-            name: `Launch ${minikitConfig.miniapp.name}`,
-            type: "launch_frame",
-          },
-        },
-      }),
-    },
-  };
-}
+export const metadata: Metadata = {
+  title: "zOrbital",
+  description: "Private swaps with FHE encryption on Base",
+};
 
 const geist = Geist({
   variable: "--font-geist",
@@ -36,43 +18,6 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const clashDisplay = localFont({
-  src: [
-    {
-      path: "../../public/fonts/WEB/fonts/ClashDisplay-Extralight.woff2",
-      weight: "200",
-      style: "normal",
-    },
-    {
-      path: "../../public/fonts/WEB/fonts/ClashDisplay-Light.woff2",
-      weight: "300",
-      style: "normal",
-    },
-    {
-      path: "../../public/fonts/WEB/fonts/ClashDisplay-Regular.woff2",
-      weight: "400",
-      style: "normal",
-    },
-    {
-      path: "../../public/fonts/WEB/fonts/ClashDisplay-Medium.woff2",
-      weight: "500",
-      style: "normal",
-    },
-    {
-      path: "../../public/fonts/WEB/fonts/ClashDisplay-Semibold.woff2",
-      weight: "600",
-      style: "normal",
-    },
-    {
-      path: "../../public/fonts/WEB/fonts/ClashDisplay-Bold.woff2",
-      weight: "700",
-      style: "normal",
-    },
-  ],
-  variable: "--font-clash",
-  display: "swap",
-});
-
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -80,12 +25,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body
-        className={`${geist.variable} ${geistMono.variable} ${clashDisplay.variable}`}
-      >
-        <Providers>
-          <SafeArea>{children}</SafeArea>
-        </Providers>
+      <body className={`${geist.variable} ${geistMono.variable}`}>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );
