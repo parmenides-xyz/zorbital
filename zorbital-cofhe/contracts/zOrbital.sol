@@ -4,10 +4,8 @@ pragma solidity ^0.8.25;
 import {IFHERC20} from "./interfaces/IFHERC20.sol";
 import {FHE, InEuint64, euint64, ebool} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
 
-/// @title zOrbital - Private N-Dimensional Sphere AMM
-/// @notice Fully private swaps using FHE on the Sphere AMM formula
-/// @dev Adapted from fhenix-amm/amm.sol for N tokens with sphere constraint:
-///      ||r - x||² = Σ(r - xᵢ)² = r²
+/// @title zOrbital - Private + n-dimensional AMM
+/// @notice Fully private swaps using FHE coprocessor
 
 interface IzOrbitalDeployer {
     function parameters() external view returns (
