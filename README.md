@@ -2,16 +2,6 @@
 
 Privacy-preserving, *n*-dimensional AMM + autonomous compute rental with encrypted swaps + x402.
 
-## Table of Contents
-
-- [Problem](#problem)
-- [Solution](#solution)
-- [Architecture](#architecture)
-- [Tech Stack](#tech-stack)
-- [Setup](#setup)
-- [Local Development](#local-development)
-- [Deployment](#deployment)
-
 ## Problem
 
 The 402 HTTP status code “Payment Required” has existed for decades, waiting for a proper micropayment layer to make it real.
