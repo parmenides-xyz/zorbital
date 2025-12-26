@@ -26,18 +26,6 @@ There’s just one problem: every payment is public + USDC-opinionated.
 
 zOrbital reimagines Paradigm's [Orbital](https://www.paradigm.xyz/2025/06/orbital) with Fully Homomorphic Encryption (FHE). Swap any stablecoin for USDC in one pool (a feature-rich implementation of Paradigm's design (*n*-dimensional CLMM for any number of stablecoins), now with opt-in FHE for confidential swaps), and pay for goods/services both publicly/privately. By leveraging Fhenix's FHE Coprocessor (recently live on Base!), the AMM computes valid swaps over ciphertext without ever decrypting the data.
 
-Key properties:
-- **Encrypted reserves**: Pool state is never revealed
-- **Private swaps**: Trade amounts computed homomorphically
-- **MEV resistant**: Bots cannot extract value from encrypted transactions
-- **Dual-mode**: Public swaps available for users who don't need privacy
-
-### Layer 2 Advantages
-
-Deployed on Base Sepolia:
-- Low gas costs make FHE operations economically viable
-- EVM compatibility with existing tooling! FHE operations work natively on EVM-compatible blockchains.
-
 Access a live deployment on Phala Cloud (verifiable cloud computing for private AI) [here](https://7ab039f3f4336135607bd2fdf50f1bbe9f524c18-3000.dstack-pha-prod7.phala.network/).
 
 ## Architecture
@@ -72,17 +60,6 @@ Access a live deployment on Phala Cloud (verifiable cloud computing for private 
 3. zOrbital.swap() computes output homomorphically
 4. User receives encrypted FHERC20 balance
 5. Optional: unwrap back to public ERC20
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| Frontend | Next.js 15, React 19, TypeScript |
-| Wallet | RainbowKit, wagmi, viem |
-| Encryption | cofhejs (Fhenix FHE SDK) |
-| Contracts | Solidity 0.8.25, Foundry |
-| L2 | Base Sepolia |
-| Deployment | Docker, Phala Cloud |
 
 ## Deployed Contracts
 
